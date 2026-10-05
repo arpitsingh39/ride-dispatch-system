@@ -1,0 +1,15 @@
+{
+  "name": "ride-dispatch",
+  "version": "1.0.0",
+  "description": "Simple asynchronous ride booking and driver dispatch system",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "billing": "node consumers/billing.js",
+    "ops": "node consumers/ops.js",
+    "test100": "node scripts/test100.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
