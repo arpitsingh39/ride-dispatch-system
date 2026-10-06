@@ -10,6 +10,7 @@
     "test100": "node scripts/test100.js"
   },
   "dependencies": {
+    "amqplib": "^2.2.0",
     "express": "^5.1.0"
   }
 }

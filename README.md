@@ -1,916 +1,326 @@
-# 🚕 Ride Dispatch System
+<h1 align="center">🚕 Ride Dispatch System</h1>
 
-A simplified asynchronous ride-booking and driver-assignment system built with **Node.js and Express.js**.
+<p align="center">
+  An asynchronous ride-booking and driver-assignment backend modelled on a simplified Ola/Uber workflow.
+</p>
 
-This project was created as part of an intern backend technical assessment. It demonstrates:
+<p align="center">
+  <img src="https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js">
+  <img src="https://img.shields.io/badge/Express.js-000000?style=for-the-badge&logo=express&logoColor=white" alt="Express.js">
+  <img src="https://img.shields.io/badge/RabbitMQ-FF6600?style=for-the-badge&logo=rabbitmq&logoColor=white" alt="RabbitMQ">
+</p>
 
-- Asynchronous ride processing
-- Queue-based ride assignment
-- Driver acceptance/rejection simulation
-- Event publishing
-- Multiple independent event consumers
-- Concurrent creation of 100 rides
-- Validation of final ride states and assignment correctness
-
----
-
-## 📋 Problem Statement
-
-The system simulates a simplified Ola/Uber-style ride booking workflow.
-
-When a rider creates a ride:
-
-1. The API immediately creates the ride and returns a `rideId`.
-2. The ride is placed into a processing queue.
-3. A background worker offers the ride to available drivers.
-4. Each driver randomly accepts or rejects the ride.
-5. If a driver accepts, the ride becomes `ASSIGNED`.
-6. If 3 drivers reject the ride, it becomes `NO_DRIVER_FOUND`.
-7. Every ride status change generates an event.
-8. Two independent consumers receive every event:
-   - **Billing Consumer**
-   - **Operations Consumer**
-
-The system also includes a script that creates **100 rides simultaneously** and verifies that every ride reaches a final state.
+Built for an intern backend technical assessment covering async processing, driver assignment, event-driven communication, and concurrent ride handling.
 
 ---
 
-# 🏗️ Architecture
+## 📑 Table of Contents
 
-```text
-                         ┌──────────────────────┐
-                         │      Client /        │
-                         │      Postman         │
-                         └──────────┬───────────┘
-                                    │
-                                    │ POST /rides
-                                    ▼
-                         ┌──────────────────────┐
-                         │    Express Server    │
-                         │      server.js      │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │     Ride Store       │
-                         │    In-memory Map     │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │      Ride Queue      │
-                         │   Sequential Queue   │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │    Ride Worker       │
-                         │ Driver Assignment    │
-                         └──────────┬───────────┘
-                                    │
-                     ┌──────────────┴──────────────┐
-                     │                             │
-                     ▼                             ▼
-              Driver accepts               Driver rejects
-                     │                             │
-                     ▼                             ▼
-                ASSIGNED                  Try next driver
-                                                   │
-                                                   │
-                                           3 rejections
-                                                   │
-                                                   ▼
-                                          NO_DRIVER_FOUND
-
-
-                    Ride Status Events
-                           │
-                           ▼
-                  ┌─────────────────┐
-                  │    Event Bus    │
-                  └────────┬────────┘
-                           │
-                 ┌─────────┴─────────┐
-                 │                   │
-                 ▼                   ▼
-        ┌─────────────────┐  ┌─────────────────┐
-        │ Billing Process │  │  Ops Process    │
-        └─────────────────┘  └─────────────────┘
-```
+1. [What It Does](#-what-it-does)
+2. [Architecture](#-architecture)
+3. [API](#-api)
+4. [Events and RabbitMQ](#-events-and-rabbitmq)
+5. [Driver Assignment](#-driver-assignment)
+6. [Getting Started](#-getting-started)
+7. [Testing 100 Concurrent Rides](#-testing-100-concurrent-rides)
+8. [Screenshots](#-screenshots)
+9. [Project Structure](#-project-structure)
+10. [Design Decisions](#-design-decisions)
+11. [Limitations and Production Improvements](#-limitations-and-production-improvements)
 
 ---
 
-# 🛠️ Tech Stack
+## ✨ What It Does
 
-- **Node.js**
-- **Express.js**
-- **JavaScript**
-- **child_process / IPC**
-- **REST API**
-- **In-memory data storage**
-
-No external database, Redis, Docker, or message broker is required for this implementation.
+- `POST /rides` creates a ride and returns a `rideId` **immediately**.
+- The ride is queued and processed in the background by a worker.
+- The worker offers the ride to drivers one at a time, and each accepts with ~50% probability.
+- First acceptance sets the ride to `ASSIGNED`. Three rejections set it to `NO_DRIVER_FOUND`.
+- Every status change is published to **RabbitMQ**, where **Billing** and **Ops** consume it independently.
+- A test script fires **100 concurrent rides** and verifies that every one reaches a final state with no duplicate assignments.
 
 ---
 
-# 📁 Project Structure
+## 🏗️ Architecture
 
-```text
-ride-dispatch/
-│
-├── consumers/
-│   ├── billing.js
-│   └── ops.js
-│
-├── screenshots/
-│   ├── 100-ride-test.png
-│   ├── create-ride.png
-│   ├── get-rides.png
-│   ├── health-check.png
-│   └── worker-events.png
-│
-├── scripts/
-│   └── test100.js
-│
-├── src/
-│   ├── events/
-│   │   └── eventBus.js
-│   │
-│   ├── queue/
-│   │   └── rideQueue.js
-│   │
-│   ├── routes/
-│   │   └── rideRoutes.js
-│   │
-│   ├── store/
-│   │   └── rideStore.js
-│   │
-│   ├── worker/
-│   │   └── rideWorker.js
-│   │
-│   └── server.js
-│
-├── .gitignore
-├── package.json
-├── package-lock.json
-└── README.md
+```mermaid
+flowchart TD
+    Client([Client]) -->|POST /rides| API[Express API]
+    API --> Store[(Ride Store<br/>in-memory Map)]
+    API --> Queue[Ride Queue]
+    Queue --> Worker[Ride Worker]
+    Worker -->|offers to drivers one at a time| Drivers{Driver response}
+    Drivers -->|accepts| Assigned[ASSIGNED]
+    Drivers -->|3 rejections| NoDriver[NO_DRIVER_FOUND]
+
+    API -->|REQUESTED event| Exchange
+    Assigned -->|final status event| Exchange
+    NoDriver -->|final status event| Exchange
+
+    Exchange{{RabbitMQ<br/>ride.events topic exchange}} --> BQ[billing.queue]
+    Exchange --> OQ[ops.queue]
+    BQ --> Billing[Billing process]
+    OQ --> Ops[Ops process]
 ```
+
+### Ride Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> REQUESTED
+    REQUESTED --> ASSIGNED: a driver accepts
+    REQUESTED --> NO_DRIVER_FOUND: 3 rejections
+    ASSIGNED --> [*]
+    NO_DRIVER_FOUND --> [*]
+```
+
+A `REQUESTED` event is published when the ride is created, and another when the worker sets the final status.
 
 ---
 
-# 🔄 Ride Booking Flow
+## 🔌 API
 
-When `POST /rides` is called:
+| Method | Endpoint | Description                                     |
+| ------ | -------- | ----------------------------------------------- |
+| `GET`  | `/`      | Health check                                    |
+| `POST` | `/rides` | Create a ride, returns `{ "rideId": "ride-1" }` |
+| `GET`  | `/rides` | List all rides currently in memory              |
 
-```text
-Client
-  │
-  ▼
-POST /rides
-  │
-  ▼
-Create ride
-  │
-  ├── status = REQUESTED
-  │
-  ▼
-Publish REQUESTED event
-  │
-  ▼
-Add ride to queue
-  │
-  ▼
-Return rideId immediately
-  │
-  ▼
-Worker processes ride
-  │
-  ▼
-Offer to Driver-1
-  │
-  ├── ACCEPT → ASSIGNED
-  │
-  └── REJECT → Driver-2
-                   │
-                   ├── ACCEPT → ASSIGNED
-                   │
-                   └── REJECT → Driver-3
-                                    │
-                                    ├── ACCEPT → ASSIGNED
-                                    │
-                                    └── REJECT
-                                         │
-                                         ▼
-                                  NO_DRIVER_FOUND
-```
-
----
-
-# 🚗 Driver Assignment
-
-The system uses 10 hardcoded drivers:
-
-```text
-Driver-1
-Driver-2
-Driver-3
-Driver-4
-Driver-5
-Driver-6
-Driver-7
-Driver-8
-Driver-9
-Driver-10
-```
-
-Each driver's response is randomly generated with approximately a 50% chance of acceptance.
-
-```javascript
-function randomDriverResponse() {
-    return Math.random() < 0.5;
-}
-```
-
-A ride is offered to drivers one at a time.
-
-If a driver rejects the ride, the worker tries the next driver.
-
-After **3 rejections**, the ride is marked:
-
-```text
-NO_DRIVER_FOUND
-```
-
-If any driver accepts, the ride becomes:
-
-```text
-ASSIGNED
-```
-
----
-
-# 📡 Event System
-
-Whenever a ride status changes, an event is published.
-
-Example event:
+**Example ride object from `GET /rides`:**
 
 ```json
 {
   "rideId": "ride-1",
   "status": "ASSIGNED",
-  "assignedDriver": "Driver-2"
+  "assignedDriver": "Driver-2",
+  "assignmentHistory": ["Driver-2"],
+  "rejectionCount": 0,
+  "nextDriverIndex": 2
 }
 ```
 
-The event is sent to both consumer processes.
-
-```text
-                    Event Bus
-                       │
-             ┌─────────┴─────────┐
-             │                   │
-             ▼                   ▼
-        Billing Process      Ops Process
-             │                   │
-             ▼                   ▼
-     "charging rider..."   "ride is now..."
-```
-
-The important part is that **both consumers receive every event**.
-
-Events are not divided between consumers.
-
 ---
 
-# 💳 Billing Consumer
+## 🐇 Events and RabbitMQ
 
-The Billing consumer runs as a separate Node.js process.
-
-It receives ride events and prints:
-
-```text
-[BILLING] charging rider for ride ride-1
-```
-
-Implementation:
-
-```javascript
-process.on("message", (event) => {
-    console.log(
-        `[BILLING] charging rider for ride ${event.rideId}`
-    );
-});
-```
-
----
-
-# 🖥️ Operations Consumer
-
-The Operations consumer also runs as a separate Node.js process.
-
-It receives the same events and prints the current ride status.
-
-Example:
-
-```text
-[OPS] ride ride-1 is now in status ASSIGNED
-```
-
-Implementation:
-
-```javascript
-process.on("message", (event) => {
-    console.log(
-        `[OPS] ride ${event.rideId} is now in status ${event.status}`
-    );
-});
-```
-
----
-
-# ⚡ Why Separate Processes?
-
-The assignment requires two separate programs/consumers to consume the same events.
-
-Node.js `child_process.fork()` is used to create two independent processes:
-
-```text
-Main Server
-    │
-    ├── Billing Process
-    │
-    └── Ops Process
-```
-
-The main process sends every event to both processes using Node.js IPC.
-
-This keeps the implementation simple while satisfying the requirement that both consumers receive every event.
-
----
-
-# 📦 Queue
-
-The ride queue stores rides waiting to be processed.
-
-When a ride is created:
-
-```javascript
-addRide(ride);
-```
-
-The ride is added to the queue.
-
-The queue processes rides sequentially:
-
-```text
-Ride 1 → Worker → Completed
-                         │
-Ride 2 → Worker → Completed
-                         │
-Ride 3 → Worker → Completed
-```
-
-This ensures that rides are processed in a controlled manner.
-
----
-
-# 🔌 API Endpoints
-
-## 1. Health Check
-
-### `GET /`
-
-Returns a simple response to verify that the server is running.
-
-Example:
-
-```text
-GET http://localhost:3000/
-```
-
-Response:
+Each status change publishes an event like this:
 
 ```json
-{
-  "message": "Ride Dispatch API is running"
-}
+{ "rideId": "ride-1", "status": "ASSIGNED", "assignedDriver": "Driver-2" }
+```
+
+### Topology
+
+| Item         | Value                                                     |
+| ------------ | --------------------------------------------------------- |
+| Exchange     | `ride.events` (topic, durable)                            |
+| Routing keys | `ride.REQUESTED`, `ride.ASSIGNED`, `ride.NO_DRIVER_FOUND` |
+| Queues       | `billing.queue`, `ops.queue` (both bound with `ride.#`)   |
+
+Each consumer has its own queue bound to the exchange, so **both receive every event** instead of splitting them.
+
+### Consumers
+
+| Consumer   | File                   | Output                                        |
+| ---------- | ---------------------- | --------------------------------------------- |
+| Billing    | `consumers/billing.js` | `[BILLING] charging rider for ride ride-1`    |
+| Operations | `consumers/ops.js`     | `[OPS] ride ride-1 is now in status ASSIGNED` |
+
+### Reliability
+
+- Durable exchange and queues
+- Persistent messages with publisher confirms
+- Manual ack / nack
+- Consumer prefetch of 10
+- Message IDs for basic in-process duplicate protection
+
+---
+
+## 🚗 Driver Assignment
+
+- There are 10 hardcoded drivers: `Driver-1` … `Driver-10`.
+- Each response is random: `Math.random() < 0.5`.
+- Drivers are offered the ride in order, and after 3 rejections the ride becomes `NO_DRIVER_FOUND`.
+- `assignmentHistory` records every assigned driver, so the test can prove no ride has two drivers.
+- Drivers are simulated and have no availability state, so the same fake driver can serve several rides.
+
+---
+
+## ▶️ Getting Started
+
+### Prerequisites
+
+- Node.js and npm
+- Erlang/OTP 27
+- RabbitMQ 4.x running at `amqp://localhost` (management UI at `http://localhost:15672`)
+
+### Install
+
+```bash
+git clone https://github.com/arpitsingh39/ride-dispatch-system.git
+cd ride-dispatch-system
+npm install
+```
+
+### Run
+
+Start the consumers first, because they create the queues. Use a separate terminal for each:
+
+```bash
+# Terminal 1
+npm run billing
+```
+
+```bash
+# Terminal 2
+npm run ops
+```
+
+```bash
+# Terminal 3
+npm start
+```
+
+The API should print `[BUS] connected to RabbitMQ` and `Server running on http://localhost:3000`.
+
+### Try it
+
+```bash
+# Create a ride
+curl -X POST http://localhost:3000/rides
+
+# View all rides
+curl http://localhost:3000/rides
 ```
 
 ---
 
-## 2. Create Ride
+## 🧪 Testing 100 Concurrent Rides
 
-### `POST /rides`
-
-Creates a new ride.
-
-The API immediately returns the generated `rideId`.
-
-Example:
-
-```text
-POST http://localhost:3000/rides
-```
-
-Response:
-
-```json
-{
-  "rideId": "ride-1"
-}
-```
-
-The ride continues processing asynchronously after the response is returned.
-
----
-
-## 3. Get All Rides
-
-### `GET /rides`
-
-Returns all rides currently stored in memory.
-
-Example:
-
-```text
-GET http://localhost:3000/rides
-```
-
-Example response:
-
-```json
-{
-  "rides": [
-    {
-      "rideId": "ride-1",
-      "status": "ASSIGNED",
-      "assignedDriver": "Driver-2",
-      "assignmentHistory": [
-        "Driver-2"
-      ],
-      "rejectionCount": 0,
-      "nextDriverIndex": 2
-    }
-  ]
-}
-```
-
----
-
-# 🧪 Testing 100 Rides
-
-The project includes:
-
-```text
-scripts/test100.js
-```
-
-This script:
-
-1. Creates 100 rides simultaneously.
-2. Stores the IDs of those rides.
-3. Checks their status until all rides finish.
-4. Counts `ASSIGNED` rides.
-5. Counts `NO_DRIVER_FOUND` rides.
-6. Checks that all 100 rides have a final status.
-7. Checks that no ride was assigned to multiple drivers.
-
-Run:
+With everything running, open a fourth terminal:
 
 ```bash
 npm run test100
 ```
 
-Example successful output:
+The script creates 100 rides at once, polls until all are finished, and checks the invariants below.
 
 ```text
 ==============================
        TEST RESULTS
 ==============================
 Total rides created: 100
-ASSIGNED: 87
-NO_DRIVER_FOUND: 13
+ASSIGNED: 92
+NO_DRIVER_FOUND: 8
 Final rides: 100
 Any ride assigned to 2 drivers? 0
 Any ride stuck with no final status? 0
 ==============================
 ```
 
-The exact `ASSIGNED` / `NO_DRIVER_FOUND` numbers can change between runs because driver responses are randomized.
+`ASSIGNED` and `NO_DRIVER_FOUND` counts vary between runs because driver responses are random. What must always hold:
 
-The important invariants are:
+- `ASSIGNED + NO_DRIVER_FOUND = 100`
+- No ride is assigned to more than one driver (checked via `assignmentHistory`)
+- No ride is stuck without a final status
+
+---
+
+## 📸 Screenshots
+
+### Health check
+
+<p align="center">
+  <img src="screenshots/health-check.png" alt="Health check" width="700">
+</p>
+
+### Create ride
+
+<p align="center">
+  <img src="screenshots/create-ride.png" alt="Create ride" width="700">
+</p>
+
+### Get rides
+
+<p align="center">
+  <img src="screenshots/get-rides.png" alt="Get rides" width="700">
+</p>
+
+### Worker and consumers
+
+<p align="center">
+  <img src="screenshots/worker-events.png" alt="Worker and consumers" width="700">
+</p>
+
+### 100-ride test
+
+<p align="center">
+  <img src="screenshots/100-ride-test.png" alt="100-ride test" width="700">
+</p>
+
+### RabbitMQ queues
+
+<p align="center">
+  <img src="screenshots/rabbitmq-queues.png" alt="RabbitMQ management UI showing billing.queue and ops.queue" width="700">
+</p>
+
+---
+
+## 📁 Project Structure
 
 ```text
-Total rides created = 100
-
-ASSIGNED + NO_DRIVER_FOUND = 100
-
-No ride assigned to 2 drivers = 0
-
-No ride stuck without final status = 0
+ride-dispatch-system/
+├── consumers/
+│   ├── billing.js            # Billing consumer process
+│   └── ops.js                # Operations consumer process
+├── scripts/
+│   └── test100.js            # 100-ride validation test
+├── src/
+│   ├── events/
+│   │   ├── config.js         # RabbitMQ URL and exchange name
+│   │   ├── eventBus.js       # Publishes events to RabbitMQ
+│   │   └── consumer.js       # Shared consumer helper
+│   ├── queue/rideQueue.js    # Sequential in-memory queue, triggers the worker
+│   ├── routes/rideRoutes.js  # POST /rides, GET /rides
+│   ├── store/rideStore.js    # In-memory Map of rides
+│   ├── worker/rideWorker.js  # Driver offers, accept/reject, final status
+│   └── server.js             # Express entry point
+├── screenshots/
+└── package.json
 ```
 
 ---
 
-# 📸 Screenshots
+## ⚙️ Design Decisions
 
-## 1. Health Check
-
-Show:
-
-```text
-GET http://localhost:3000/
-```
-
-and the response:
-
-```json
-{
-  "message": "Ride Dispatch API is running"
-}
-```
-
-**Screenshot:**
-
-![Health Check](screenshots/health-check.png)
+| Decision | Why |
+| --- | --- |
+| **Immediate API response** | `POST /rides` never waits for assignment, because matching runs in a background worker. |
+| **RabbitMQ instead of Node IPC** | The first version forked Billing and Ops with `child_process.fork()`. RabbitMQ lets them run, crash, and restart independently, and queued events wait for them. |
+| **One queue per consumer** | A shared queue would split events between Billing and Ops, so each gets its own copy. |
+| **Topic exchange** | Routing keys like `ride.ASSIGNED` let a consumer subscribe to only the events it needs. |
+| **In-memory storage** | Keeps the focus on async processing, queueing, events, and correctness under concurrency. Data resets on restart. |
+| **Sequential worker** | Keeps the flow simple and easy to reason about. |
 
 ---
 
-## 2. Create Ride — POST /rides
+## ⚠️ Limitations and Production Improvements
 
-Show the Postman request:
+| Current (assessment)            | Production approach                      |
+| ------------------------------- | ---------------------------------------- |
+| In-memory `Map`                 | PostgreSQL / MongoDB                     |
+| In-process ride queue           | RabbitMQ or Redis + BullMQ               |
+| Single sequential worker        | Multiple workers                         |
+| Simulated drivers               | Real availability and location tracking  |
+| In-process duplicate protection | Persistent idempotency store             |
+| No dead-letter queue            | Dead-letter exchange and queue           |
+| Local RabbitMQ                  | Managed RabbitMQ                         |
+| No auth, basic console logging  | JWT / OAuth, structured logging, metrics |
 
-```text
-POST http://localhost:3000/rides
-```
-
-with the returned `rideId`.
-
-**Screenshot:**
-
-![Create Ride](screenshots/create-ride.png)
-
----
-
-## 3. Get Rides — GET /rides
-
-Show the stored ride and its final status.
-
-**Screenshot:**
-
-![Get Rides](screenshots/get-rides.png)
+Also worth adding: ride timeouts, retry policies, request validation, graceful shutdown, and containerization.
 
 ---
 
-## 4. Worker + Event Consumers
-
-Show the terminal output demonstrating:
-
-- Driver rejection/acceptance
-- `ASSIGNED` or `NO_DRIVER_FOUND`
-- Billing event
-- Ops event
-
-**Screenshot:**
-
-![Worker and Consumers](screenshots/worker-events.png)
-
----
-
-## 5. 100-Ride Test
-
-Show the terminal output containing:
-
-```text
-Total rides created: 100
-ASSIGNED: ...
-NO_DRIVER_FOUND: ...
-Final rides: 100
-Any ride assigned to 2 drivers? 0
-Any ride stuck with no final status? 0
-```
-
-**Screenshot:**
-
-![100 Ride Test](screenshots/100-ride-test.png)
-
----
-
-# ▶️ How to Run
-
-## 1. Clone the repository
-
-```bash
-git clone https://github.com/arpitsingh39/ride-dispatch-system.git
-```
-
-Move into the project:
-
-```bash
-cd ride-dispatch-system
-```
-
----
-
-## 2. Install dependencies
-
-```bash
-npm install
-```
-
----
-
-## 3. Start the server
-
-```bash
-npm start
-```
-
-The server runs on:
-
-```text
-http://localhost:3000
-```
-
----
-
-## 4. Test the API
-
-Create a ride:
-
-```text
-POST http://localhost:3000/rides
-```
-
-View rides:
-
-```text
-GET http://localhost:3000/rides
-```
-
----
-
-# 📜 Available Scripts
-
-| Command | Description |
-|---|---|
-| `npm start` | Starts the Express server |
-| `npm run billing` | Starts the Billing consumer independently |
-| `npm run ops` | Starts the Operations consumer independently |
-| `npm run test100` | Creates and validates 100 rides |
-
----
-
-# 🧩 Important Files
-
-### `src/server.js`
-
-Initializes the Express application and starts the HTTP server.
-
----
-
-### `src/routes/rideRoutes.js`
-
-Contains the ride API endpoints:
-
-```text
-POST /rides
-GET /rides
-```
-
-It creates rides, publishes events, and adds rides to the queue.
-
----
-
-### `src/store/rideStore.js`
-
-Maintains rides using an in-memory JavaScript `Map`.
-
-It provides functions to:
-
-- Create rides
-- Get a ride
-- Get all rides
-
----
-
-### `src/queue/rideQueue.js`
-
-Maintains the processing queue and starts the worker when rides are available.
-
----
-
-### `src/worker/rideWorker.js`
-
-Contains the driver assignment logic.
-
-It:
-
-- Selects drivers
-- Simulates acceptance/rejection
-- Tracks rejections
-- Assigns a driver
-- Sets `NO_DRIVER_FOUND` after 3 rejections
-- Publishes status events
-
----
-
-### `src/events/eventBus.js`
-
-Creates the Billing and Operations child processes and sends every ride event to both consumers.
-
----
-
-### `consumers/billing.js`
-
-Consumes ride events for billing-related processing.
-
----
-
-### `consumers/ops.js`
-
-Consumes ride events for operations/status monitoring.
-
----
-
-### `scripts/test100.js`
-
-Runs the 100-ride validation test.
-
-It verifies:
-
-- 100 rides are created
-- Every ride reaches a final status
-- No ride has multiple assignments
-- No ride remains stuck
-
----
-
-# 🔐 Data Storage
-
-This implementation uses an **in-memory JavaScript `Map`** instead of a database.
-
-This was intentionally kept simple because the assessment focuses on:
-
-- Asynchronous processing
-- Queueing
-- Driver assignment
-- Event publishing
-- Multiple consumers
-- Correctness under 100 concurrent ride requests
-
-The data is therefore reset whenever the server restarts.
-
----
-
-# ⚙️ Design Decisions
-
-### Immediate API Response
-
-The `POST /rides` endpoint does not wait for driver assignment.
-
-It creates the ride, queues it, and immediately returns the `rideId`.
-
-This allows the driver assignment process to happen asynchronously.
-
----
-
-### Sequential Worker Processing
-
-The queue processes rides sequentially.
-
-This keeps the implementation simple and makes the assignment flow easy to reason about.
-
----
-
-### Driver Assignment History
-
-Each ride maintains:
-
-```javascript
-assignmentHistory
-```
-
-This allows the test script to verify that no ride was assigned to more than one driver.
-
----
-
-### Three-Rejection Rule
-
-A ride is offered to drivers until:
-
-- A driver accepts, or
-- Three drivers reject the ride.
-
-After three rejections:
-
-```text
-NO_DRIVER_FOUND
-```
-
----
-
-### Separate Event Consumers
-
-Billing and Operations are separate Node.js processes.
-
-Every event is sent to both consumers, ensuring that neither consumer misses an event.
-
----
-
-# ⚠️ Limitations
-
-This is a simplified assessment implementation.
-
-### In-memory storage
-
-Rides are lost when the Node.js server restarts.
-
-A production system would use a persistent database.
-
-### In-process queue
-
-The queue exists inside the Node.js application.
-
-A production system could use a durable queue such as Redis, RabbitMQ, Kafka, or another message broker.
-
-### Simulated drivers
-
-Drivers are hardcoded and their responses are randomly generated.
-
-A production system would communicate with real driver availability and location services.
-
-### Single worker
-
-The current implementation processes rides sequentially.
-
-A production system could use multiple workers for higher throughput.
-
----
-
-# 🚀 Possible Production Improvements
-
-If this system were extended for production, I would consider:
-
-- MongoDB/PostgreSQL for persistent ride storage
-- Redis/BullMQ or RabbitMQ for a durable job queue
-- Kafka/RabbitMQ for event streaming
-- Multiple worker processes
-- Driver location and availability tracking
-- Ride timeout handling
-- Retry mechanisms
-- Idempotent event processing
-- Authentication and authorization
-- Request validation
-- Structured logging
-- Monitoring and metrics
-- Docker/containerization
-- Horizontal scaling
-
----
-
-# ✅ Assessment Requirements Covered
-
-| Requirement | Implementation |
-|---|---|
-| Create ride API | `POST /rides` |
-| Return `rideId` immediately | Implemented |
-| Queue ride | `rideQueue.js` |
-| Separate worker | `rideWorker.js` |
-| Hardcoded drivers | 10 drivers |
-| Random accept/reject | ~50% probability |
-| Assign accepted ride | `ASSIGNED` |
-| Three rejections | `NO_DRIVER_FOUND` |
-| Publish ride events | `eventBus.js` |
-| Billing consumer | `consumers/billing.js` |
-| Operations consumer | `consumers/ops.js` |
-| Both consumers receive every event | Implemented using IPC |
-| Create 100 rides | `scripts/test100.js` |
-| No duplicate assignments | `assignmentHistory` validation |
-| No stuck rides | Final-status validation |
-| README | This document |
-
----
-
-# 📌 Summary
-
-This project demonstrates an asynchronous ride-booking workflow where a ride is created immediately, processed through a queue, assigned to drivers asynchronously, and publishes events to multiple independent consumers.
-
-The 100-ride test verifies the core correctness requirements:
-
-```text
-100 rides created
-        ↓
-Driver assignment processing
-        ↓
-ASSIGNED / NO_DRIVER_FOUND
-        ↓
-100 final rides
-        ↓
-0 duplicate assignments
-        ↓
-0 stuck rides
-```
-
-**Built with Node.js + Express.js + JavaScript + Node.js IPC**
+<p align="center">
+  Built with Node.js, Express.js, RabbitMQ, and <code>amqplib</code>.
+</p>

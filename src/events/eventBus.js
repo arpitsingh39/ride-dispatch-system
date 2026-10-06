@@ -1,13 +1,28 @@
-const { fork } = require("child_process");
-const path = require("path");
+const amqp = require("amqplib");
+const { URL, EXCHANGE } = require("./config");
 
-const billingProcess = fork(
-    path.join(__dirname, "../../consumers/billing.js")
-);
+let channel = null;
 
-const opsProcess = fork(
-    path.join(__dirname, "../../consumers/ops.js")
-);
+async function initEventBus() {
+    const connection = await amqp.connect(URL);
+
+    connection.on("error", (err) =>
+        console.error("[BUS] connection error:", err.message)
+    );
+
+    connection.on("close", () => {
+        console.error("[BUS] connection closed");
+        channel = null;
+    });
+
+    channel = await connection.createConfirmChannel();
+
+    await channel.assertExchange(EXCHANGE, "topic", {
+        durable: true
+    });
+
+    console.log("[BUS] connected to RabbitMQ");
+}
 
 function publishRideEvent(ride) {
     const event = {
@@ -16,11 +31,34 @@ function publishRideEvent(ride) {
         assignedDriver: ride.assignedDriver
     };
 
-    // Send the SAME event to both programs
-    billingProcess.send(event);
-    opsProcess.send(event);
+    if (!channel) {
+        console.error(
+            `[BUS] not connected, dropping event for ${event.rideId}`
+        );
+        return;
+    }
+
+    channel.publish(
+        EXCHANGE,
+        `ride.${event.status}`,
+        Buffer.from(JSON.stringify(event)),
+        {
+            persistent: true,
+            contentType: "application/json",
+            messageId: `${event.rideId}:${event.status}`
+        },
+        (err) => {
+            if (err) {
+                console.error(
+                    `[BUS] publish failed for ${event.rideId}:`,
+                    err.message
+                );
+            }
+        }
+    );
 }
 
 module.exports = {
+    initEventBus,
     publishRideEvent
 };
